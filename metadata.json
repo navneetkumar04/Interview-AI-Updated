@@ -1,0 +1,11 @@
+{
+  "name": "Interview.ai",
+  "description": "AI-powered interview preparation and real-time human-to-human interview platform with AI Avatar simulations, resume analyzer, video Q&A analyzer, and career roadmaps.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
