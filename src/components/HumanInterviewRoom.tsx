@@ -87,6 +87,14 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
   const [copiedLink, setCopiedLink] = useState(false);
   const [activeTab, setActiveTab] = useState<'notes' | 'transcript' | 'questions'>('notes');
 
+  // Stable refs to prevent effect re-trigger loops
+  const interviewRef = useRef(interview);
+  interviewRef.current = interview;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const onSelectViewRef = useRef(onSelectView);
+  onSelectViewRef.current = onSelectView;
+
   // Determine user role in this room
   const isInterviewer =
     user?.role === 'interviewer' ||
@@ -108,14 +116,15 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
   };
 
   // 1. Initialize Local Media Stream (Camera & Microphone)
-  const initLocalMedia = useCallback(async () => {
+  const initLocalMedia = useCallback(async (): Promise<MediaStream | null> => {
     setIsRequestingMedia(true);
     setPermissionError(null);
 
     try {
       // Clean up previous stream tracks if any
-      if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop());
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
       }
 
       // Request camera and mic
@@ -137,6 +146,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
 
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
       }
 
       // Update WebRTC Manager with local stream
@@ -165,6 +175,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
         localStreamRef.current = audioOnlyStream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = audioOnlyStream;
+          localVideoRef.current.play().catch(() => {});
         }
         if (webrtcManagerRef.current) {
           webrtcManagerRef.current.setLocalStream(audioOnlyStream);
@@ -179,7 +190,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
     } finally {
       setIsRequestingMedia(false);
     }
-  }, [localStream]);
+  }, []);
 
   // Toggle Microphone
   const toggleMic = () => {
@@ -275,11 +286,11 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
     }
   };
 
-  // 2. Fetch Interview Info & Authorize via API
+  // 2. Fetch Interview Info, Acquire Media, and Connect WebRTC & Socket
   useEffect(() => {
-    let active = true;
+    let isDisposed = false;
 
-    async function loadInterview() {
+    async function initRoom() {
       try {
         setLoading(true);
         setError(null);
@@ -287,235 +298,254 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
         // API checks authorization (assigned candidate, interviewer, or admin)
         // and transitions status: scheduled -> in_progress
         const joinRes = await api.scheduled.join(roomId);
-        if (!active) return;
-
-        setInterview(joinRes.interview);
-        setTranscript(joinRes.interview?.transcript || []);
-        setInterviewerNotes(joinRes.interview?.notes || '');
-      } catch (err: any) {
-        if (!active) return;
-        setError(err?.message || 'Access denied or failed to load scheduled interview room.');
-      } finally {
-        if (active) setLoading(false);
-      }
-    }
-
-    loadInterview();
-
-    return () => {
-      active = false;
-    };
-  }, [roomId]);
-
-  // 3. Connect Media and WebRTC Peer Connection once authorized
-  useEffect(() => {
-    if (!interview || error) return;
-
-    let isDisposed = false;
-
-    // A. Start local camera and mic
-    initLocalMedia();
-
-    // B. Instantiate WebRTC Manager
-    const manager = new WebRTCManager({
-      onRemoteStream: (stream: MediaStream) => {
         if (isDisposed) return;
-        setRemoteStream(stream);
-        setPeerDisconnected(false);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
+
+        const interviewData = joinRes.interview;
+        setInterview(interviewData);
+        interviewRef.current = interviewData;
+        setTranscript(interviewData?.transcript || []);
+        setInterviewerNotes(interviewData?.notes || '');
+        setLoading(false);
+
+        // A. Start local camera and mic and await ready stream
+        const stream = await initLocalMedia();
+        if (isDisposed) return;
+
+        // B. Instantiate WebRTC Manager
+        const manager = new WebRTCManager({
+          onRemoteStream: (incomingStream: MediaStream) => {
+            if (isDisposed) return;
+            setRemoteStream(incomingStream);
+            setPeerDisconnected(false);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = incomingStream;
+              remoteVideoRef.current.play().catch(() => {});
+            }
+          },
+          onConnectionStateChange: (state: RTCPeerConnectionState) => {
+            if (isDisposed) return;
+            setConnectionState(state);
+            if (state === 'disconnected' || state === 'failed') {
+              setPeerDisconnected(true);
+            } else if (state === 'connected') {
+              setPeerDisconnected(false);
+            }
+          },
+          sendSignal: (event: string, payload: any) => {
+            if (socketRef.current && socketRef.current.connected) {
+              socketRef.current.emit(event, payload);
+            }
+          },
+          onError: (err: Error) => {
+            console.warn('[WebRTC] Manager error:', err);
+          },
+        });
+
+        if (stream) {
+          manager.setLocalStream(stream);
         }
-      },
-      onConnectionStateChange: (state: RTCPeerConnectionState) => {
-        if (isDisposed) return;
-        setConnectionState(state);
-        if (state === 'disconnected' || state === 'failed') {
-          setPeerDisconnected(true);
-        } else if (state === 'connected') {
+        webrtcManagerRef.current = manager;
+
+        // C. Connect Socket.IO
+        const socket = getInterviewSocket();
+        socketRef.current = socket;
+
+        // Helper to join room once socket connects
+        const joinRoom = () => {
+          socket.emit('join-room', { roomId });
+        };
+
+        if (socket.connected) {
+          joinRoom();
+        } else {
+          socket.once('connect', joinRoom);
+        }
+
+        // Handlers for room events
+        socket.on('room-error', (data: { message: string }) => {
+          setError(data.message);
+        });
+
+        socket.on('joined-room', async (data: {
+          roomId: string;
+          existingUsers: string[];
+          existingParticipants?: Array<{
+            socketId: string;
+            userId?: string;
+            userName?: string;
+            role?: string;
+          }>;
+          interviewStatus?: string;
+        }) => {
+          if (isDisposed) return;
+
+          if (data.interviewStatus) {
+            setInterview((prev: any) => ({ ...prev, status: data.interviewStatus }));
+          }
+
+          const currentInterview = interviewRef.current;
+          const currentUser = userRef.current;
+          const isInterviewerNow =
+            currentUser?.role === 'interviewer' ||
+            currentUser?.role === 'admin' ||
+            String(currentInterview?.interviewerId) === String(currentUser?.id);
+
+          // If a participant is already in the room, record their information
+          if (data.existingParticipants && data.existingParticipants.length > 0) {
+            const peer = data.existingParticipants[0];
+            setRemotePeerSocketId(peer.socketId);
+            setRemotePeerInfo({
+              name: peer.userName || (isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName),
+              role: peer.role || (isInterviewerNow ? 'Candidate' : 'Interviewer'),
+              micEnabled: true,
+              camEnabled: true,
+            });
+          } else if (data.existingUsers && data.existingUsers.length > 0) {
+            const peerId = data.existingUsers[0];
+            setRemotePeerSocketId(peerId);
+            setRemotePeerInfo({
+              name: isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName,
+              role: isInterviewerNow ? 'Candidate' : 'Interviewer',
+              micEnabled: true,
+              camEnabled: true,
+            });
+          }
+        });
+
+        // When the second participant enters the room
+        socket.on('user-joined', async (data: {
+          userId: string;
+          userName: string;
+          role: string;
+          socketId: string;
+        }) => {
+          if (isDisposed) return;
+
+          const currentInterview = interviewRef.current;
+          const currentUser = userRef.current;
+          const isInterviewerNow =
+            currentUser?.role === 'interviewer' ||
+            currentUser?.role === 'admin' ||
+            String(currentInterview?.interviewerId) === String(currentUser?.id);
+
+          setRemotePeerSocketId(data.socketId);
+          setRemotePeerInfo({
+            name: data.userName || (isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName),
+            role: data.role || (isInterviewerNow ? 'Candidate' : 'Interviewer'),
+            micEnabled: true,
+            camEnabled: true,
+          });
           setPeerDisconnected(false);
+
+          // Existing participant initiates the WebRTC offer to the newly joined peer
+          if (webrtcManagerRef.current) {
+            try {
+              await webrtcManagerRef.current.initializePeerConnection(data.socketId, true);
+            } catch (e) {
+              console.warn('Failed to initiate WebRTC offer:', e);
+            }
+          }
+        });
+
+        // WebRTC Signaling: Offer
+        socket.on('signal:offer', async (data: { from: string; offer: any; user?: any }) => {
+          if (isDisposed) return;
+
+          setRemotePeerSocketId(data.from);
+          if (data.user) {
+            setRemotePeerInfo({
+              name: data.user.name,
+              role: data.user.role,
+              micEnabled: true,
+              camEnabled: true,
+            });
+          }
+
+          if (webrtcManagerRef.current) {
+            await webrtcManagerRef.current.handleOffer(data.offer, data.from);
+          }
+        });
+
+        // WebRTC Signaling: Answer
+        socket.on('signal:answer', async (data: { from: string; answer: any }) => {
+          if (isDisposed) return;
+          if (webrtcManagerRef.current) {
+            await webrtcManagerRef.current.handleAnswer(data.answer);
+          }
+        });
+
+        // WebRTC Signaling: ICE Candidate
+        socket.on('signal:ice-candidate', async (data: { from: string; candidate: any }) => {
+          if (isDisposed) return;
+          if (webrtcManagerRef.current) {
+            await webrtcManagerRef.current.handleIceCandidate(data.candidate);
+          }
+        });
+
+        // Peer Media State Sync (Mute / Video toggled)
+        socket.on('media:state', (data: { from: string; micEnabled: boolean; camEnabled: boolean }) => {
+          if (isDisposed) return;
+          setRemotePeerInfo((prev) =>
+            prev
+              ? { ...prev, micEnabled: data.micEnabled, camEnabled: data.camEnabled }
+              : null
+          );
+        });
+
+        // Peer Reconnection Request
+        socket.on('signal:reconnect-request', async (data: { from: string }) => {
+          if (isDisposed) return;
+          if (webrtcManagerRef.current) {
+            await webrtcManagerRef.current.initializePeerConnection(data.from, true);
+          }
+        });
+
+        // Peer Left or Disconnected
+        socket.on('user-left', () => {
+          if (isDisposed) return;
+          setPeerDisconnected(true);
+          setRemoteStream(null);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+          }
+          if (webrtcManagerRef.current) {
+            webrtcManagerRef.current.close();
+          }
+        });
+
+        // Status changed
+        socket.on('interview-status', (data: { status: string }) => {
+          if (isDisposed) return;
+          setInterview((prev: any) => (prev ? { ...prev, status: data.status } : prev));
+        });
+
+        // Interview ended by peer
+        socket.on('interview:ended', (data: { reportId?: string }) => {
+          if (isDisposed) return;
+          alert('This interview has concluded. Generating AI scorecard...');
+          const currentInterview = interviewRef.current;
+          const currentUser = userRef.current;
+          const isInterviewerNow =
+            currentUser?.role === 'interviewer' ||
+            currentUser?.role === 'admin' ||
+            String(currentInterview?.interviewerId) === String(currentUser?.id);
+
+          if (data?.reportId) {
+            onSelectViewRef.current('report-view', { reportId: data.reportId });
+          } else {
+            onSelectViewRef.current(isInterviewerNow ? 'interviewer-dashboard' : 'dashboard');
+          }
+        });
+
+      } catch (err: any) {
+        if (!isDisposed) {
+          setError(err?.message || 'Access denied or failed to load scheduled interview room.');
+          setLoading(false);
         }
-      },
-      sendSignal: (event: string, payload: any) => {
-        if (socketRef.current && socketRef.current.connected) {
-          socketRef.current.emit(event, payload);
-        }
-      },
-      onError: (err: Error) => {
-        console.warn('[WebRTC] Manager error:', err);
-      },
-    });
-
-    webrtcManagerRef.current = manager;
-
-    // C. Connect Socket.IO
-    const socket = getInterviewSocket();
-    socketRef.current = socket;
-
-    // Helper to join room once socket connects
-    const joinRoom = () => {
-      socket.emit('join-room', { roomId });
-    };
-
-    if (socket.connected) {
-      joinRoom();
-    } else {
-      socket.once('connect', joinRoom);
+      }
     }
 
-    // Handlers for room events
-    socket.on('room-error', (data: { message: string }) => {
-      setError(data.message);
-    });
-
-    socket.on('joined-room', async (data: {
-      roomId: string;
-      existingUsers: string[];
-      existingParticipants?: Array<{
-        socketId: string;
-        userId?: string;
-        userName?: string;
-        role?: string;
-      }>;
-      interviewStatus?: string;
-    }) => {
-      if (isDisposed) return;
-
-      if (data.interviewStatus && interview) {
-        setInterview((prev: any) => ({ ...prev, status: data.interviewStatus }));
-      }
-
-      // If a participant is already in the room, record their information
-      if (data.existingParticipants && data.existingParticipants.length > 0) {
-        const peer = data.existingParticipants[0];
-        setRemotePeerSocketId(peer.socketId);
-        setRemotePeerInfo({
-          name: peer.userName || (isInterviewer ? interview?.candidateName : interview?.interviewerName),
-          role: peer.role || (isInterviewer ? 'Candidate' : 'Interviewer'),
-          micEnabled: true,
-          camEnabled: true,
-        });
-      } else if (data.existingUsers && data.existingUsers.length > 0) {
-        const peerId = data.existingUsers[0];
-        setRemotePeerSocketId(peerId);
-        setRemotePeerInfo({
-          name: isInterviewer ? interview?.candidateName : interview?.interviewerName,
-          role: isInterviewer ? 'Candidate' : 'Interviewer',
-          micEnabled: true,
-          camEnabled: true,
-        });
-      }
-    });
-
-    // When the second participant enters the room
-    socket.on('user-joined', async (data: {
-      userId: string;
-      userName: string;
-      role: string;
-      socketId: string;
-    }) => {
-      if (isDisposed) return;
-
-      setRemotePeerSocketId(data.socketId);
-      setRemotePeerInfo({
-        name: data.userName || (isInterviewer ? interview?.candidateName : interview?.interviewerName),
-        role: data.role || (isInterviewer ? 'Candidate' : 'Interviewer'),
-        micEnabled: true,
-        camEnabled: true,
-      });
-      setPeerDisconnected(false);
-
-      // Existing participant initiates the WebRTC offer to the newly joined peer
-      if (webrtcManagerRef.current) {
-        try {
-          await webrtcManagerRef.current.initializePeerConnection(data.socketId, true);
-        } catch (e) {
-          console.warn('Failed to initiate WebRTC offer:', e);
-        }
-      }
-    });
-
-    // WebRTC Signaling: Offer
-    socket.on('signal:offer', async (data: { from: string; offer: any; user?: any }) => {
-      if (isDisposed) return;
-
-      setRemotePeerSocketId(data.from);
-      if (data.user) {
-        setRemotePeerInfo({
-          name: data.user.name,
-          role: data.user.role,
-          micEnabled: true,
-          camEnabled: true,
-        });
-      }
-
-      if (webrtcManagerRef.current) {
-        await webrtcManagerRef.current.handleOffer(data.offer, data.from);
-      }
-    });
-
-    // WebRTC Signaling: Answer
-    socket.on('signal:answer', async (data: { from: string; answer: any }) => {
-      if (isDisposed) return;
-      if (webrtcManagerRef.current) {
-        await webrtcManagerRef.current.handleAnswer(data.answer);
-      }
-    });
-
-    // WebRTC Signaling: ICE Candidate
-    socket.on('signal:ice-candidate', async (data: { from: string; candidate: any }) => {
-      if (isDisposed) return;
-      if (webrtcManagerRef.current) {
-        await webrtcManagerRef.current.handleIceCandidate(data.candidate);
-      }
-    });
-
-    // Peer Media State Sync (Mute / Video toggled)
-    socket.on('media:state', (data: { from: string; micEnabled: boolean; camEnabled: boolean }) => {
-      if (isDisposed) return;
-      setRemotePeerInfo((prev) =>
-        prev
-          ? { ...prev, micEnabled: data.micEnabled, camEnabled: data.camEnabled }
-          : null
-      );
-    });
-
-    // Peer Reconnection Request
-    socket.on('signal:reconnect-request', async (data: { from: string }) => {
-      if (isDisposed) return;
-      if (webrtcManagerRef.current) {
-        await webrtcManagerRef.current.initializePeerConnection(data.from, true);
-      }
-    });
-
-    // Peer Left or Disconnected
-    socket.on('user-left', () => {
-      if (isDisposed) return;
-      setPeerDisconnected(true);
-      setRemoteStream(null);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
-      if (webrtcManagerRef.current) {
-        webrtcManagerRef.current.close();
-      }
-    });
-
-    // Status changed
-    socket.on('interview-status', (data: { status: string }) => {
-      if (isDisposed) return;
-      setInterview((prev: any) => (prev ? { ...prev, status: data.status } : prev));
-    });
-
-    // Interview ended by peer
-    socket.on('interview:ended', (data: { reportId?: string }) => {
-      if (isDisposed) return;
-      alert('This interview has concluded. Generating AI scorecard...');
-      if (data?.reportId) {
-        onSelectView('report-view', { reportId: data.reportId });
-      } else {
-        onSelectView(isInterviewer ? 'interviewer-dashboard' : 'dashboard');
-      }
-    });
+    initRoom();
 
     // Cleanup on unmount or room change
     return () => {
@@ -529,6 +559,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
       }
       if (screenTrackRef.current) {
         screenTrackRef.current.stop();
+        screenTrackRef.current = null;
       }
 
       // Close WebRTC
@@ -554,20 +585,22 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
       }
       disconnectInterviewSocket();
     };
-  }, [interview, roomId, error, initLocalMedia, isInterviewer, onSelectView]);
+  }, [roomId, initLocalMedia]);
 
   // Keep video elements bound to streams
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
     }
-  }, [localStream]);
+  }, [localStream, isCameraOff]);
 
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(() => {});
     }
-  }, [remoteStream]);
+  }, [remoteStream, peerDisconnected]);
 
   // Copy meeting link
   const handleCopyMeetingLink = () => {
@@ -907,14 +940,15 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
             <div className="relative w-full h-full flex flex-col sm:flex-row items-stretch justify-center bg-[#020617] overflow-hidden">
               {/* Remote Participant Video Tile */}
               <div className="relative flex-1 h-full flex items-center justify-center bg-slate-950 overflow-hidden border-b sm:border-b-0 sm:border-r border-slate-800/80">
-                {remoteStream && !peerDisconnected ? (
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className={`w-full h-full object-cover ${
+                    remoteStream && !peerDisconnected ? 'block' : 'hidden'
+                  }`}
+                />
+                {(!remoteStream || peerDisconnected) && (
                   <div className="text-center p-6 max-w-sm">
                     <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mx-auto mb-3">
                       <Users className="w-8 h-8 text-slate-500" />
@@ -950,15 +984,16 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
 
               {/* Local Participant Video Tile */}
               <div className="relative w-full sm:w-[45%] lg:w-[40%] h-full flex items-center justify-center bg-slate-900/60 overflow-hidden">
-                {localStream && !isCameraOff ? (
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover -scale-x-100"
-                  />
-                ) : (
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-cover -scale-x-100 ${
+                    localStream && !isCameraOff ? 'block' : 'hidden'
+                  }`}
+                />
+                {(!localStream || isCameraOff) && (
                   <div className="text-center p-6">
                     <div className="w-14 h-14 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 mx-auto mb-2">
                       <VideoOff className="w-6 h-6 text-slate-500" />

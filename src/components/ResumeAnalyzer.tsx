@@ -750,6 +750,13 @@ export const ResumeAnalyzer: React.FC = () => {
                   Switch to Paste Text Mode →
                 </button>
               )}
+              {(error.includes('GEMINI_API_KEY') || error.includes('GROQ_API_KEY')) && (
+                <div className="mt-2 p-2.5 rounded-lg bg-slate-900/90 border border-slate-700/80 text-[11px] text-slate-300">
+                  <span className="font-semibold text-amber-300 block mb-0.5">How to resolve:</span>
+                  1. Get a free Google Gemini key at <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 underline">aistudio.google.com</a> (keys begin with <code>AIzaSy...</code>).<br />
+                  2. Update <code>GEMINI_API_KEY</code> in your <code>.env</code> file and restart the server.
+                </div>
+              )}
             </div>
           </div>
         )}

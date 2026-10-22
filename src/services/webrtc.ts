@@ -136,19 +136,27 @@ export function getIceServers(options?: {
   };
 }
 
+let cachedIceServers: IceServerConfig[] | null = null;
+
 export async function fetchServerIceServers(): Promise<IceServerConfig[]> {
+  if (cachedIceServers && cachedIceServers.length > 0) {
+    return cachedIceServers;
+  }
   try {
     const res = await fetch('/api/webrtc/config');
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
-        return data.iceServers;
+        cachedIceServers = data.iceServers;
+        return cachedIceServers;
       }
     }
   } catch {
     // Fallback to local STUN-only configuration
   }
-  return getIceServers().iceServers;
+  const fallback = getIceServers().iceServers;
+  cachedIceServers = fallback;
+  return fallback;
 }
 
 export interface WebRTCManagerCallbacks {
@@ -174,8 +182,9 @@ export class WebRTCManager {
     this.targetSocketId = targetSocketId;
     this.isInitiator = isInitiator;
 
-    // Fetch sanitized ICE servers ensuring TURN is disabled if placeholder/empty
-    const iceServers = await fetchServerIceServers();
+    // Use synchronously available ICE servers to prevent delaying signaling
+    const iceServers = cachedIceServers || getIceServers().iceServers;
+    fetchServerIceServers().catch(() => {});
 
     const config: RTCConfiguration = {
       iceServers: iceServers as RTCIceServer[],
@@ -184,10 +193,10 @@ export class WebRTCManager {
 
     if (this.peerConnection) {
       this.peerConnection.close();
+      this.peerConnection = null;
     }
 
     this.peerConnection = new RTCPeerConnection(config);
-    this.pendingCandidates = [];
 
     // Attach local media tracks if stream exists
     if (this.localStream) {
@@ -206,6 +215,10 @@ export class WebRTCManager {
     this.peerConnection.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         this.callbacks.onRemoteStream?.(event.streams[0]);
+      } else if (event.track) {
+        // Fallback for browsers delivering tracks individually
+        const fallbackStream = new MediaStream([event.track]);
+        this.callbacks.onRemoteStream?.(fallbackStream);
       }
     };
 
@@ -262,6 +275,20 @@ export class WebRTCManager {
       await this.initializePeerConnection(fromSocketId, false);
     }
     if (this.peerConnection) {
+      // Ensure local tracks are attached before generating answer
+      if (this.localStream) {
+        const senders = this.peerConnection.getSenders();
+        for (const track of this.localStream.getTracks()) {
+          if (!senders.some((s) => s.track === track || s.track?.kind === track.kind)) {
+            try {
+              this.peerConnection.addTrack(track, this.localStream);
+            } catch (e) {
+              console.warn('Track attach error before answer:', e);
+            }
+          }
+        }
+      }
+
       // Glare handling: If signalingState is not stable, rollback local offer to resolve collision cleanly
       if (this.peerConnection.signalingState !== 'stable') {
         try {
@@ -299,7 +326,7 @@ export class WebRTCManager {
   public async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (!candidate) return;
 
-    if (this.peerConnection && this.peerConnection.remoteDescription) {
+    if (this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
       try {
         await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err: any) {
@@ -343,6 +370,7 @@ export class WebRTCManager {
     this.localStream = stream;
     if (stream && this.peerConnection) {
       const senders = this.peerConnection.getSenders();
+      let newTrackAdded = false;
       stream.getTracks().forEach((track) => {
         const sender = senders.find((s) => s.track?.kind === track.kind);
         if (sender) {
@@ -350,11 +378,26 @@ export class WebRTCManager {
         } else {
           try {
             this.peerConnection?.addTrack(track, stream);
+            newTrackAdded = true;
           } catch (e) {
             console.warn('addTrack warning:', e);
           }
         }
       });
+
+      // If tracks were added to an existing connection, initiate renegotiation so the peer receives them
+      if (newTrackAdded && this.targetSocketId && this.peerConnection.signalingState === 'stable') {
+        this.peerConnection
+          .createOffer()
+          .then((offer) => this.peerConnection!.setLocalDescription(offer).then(() => offer))
+          .then((offer) => {
+            this.callbacks.sendSignal('signal:offer', {
+              to: this.targetSocketId,
+              offer,
+            });
+          })
+          .catch((err) => console.warn('Renegotiation error:', err));
+      }
     }
   }
 

@@ -185,9 +185,9 @@ const MainContent: React.FC = () => {
       return;
     }
 
-    // Guard both interviewer-dashboard and scheduled-interviews from candidate accounts
-    if ((view === 'interviewer-dashboard' || view === 'scheduled-interviews') && user.role === 'candidate') {
-      setCurrentView('dashboard');
+    // Guard interviewer-dashboard private controls from candidate accounts (scheduled-interviews is accessible by candidates to view their live rooms)
+    if (view === 'interviewer-dashboard' && user.role === 'candidate') {
+      setCurrentView('scheduled-interviews');
       return;
     }
 
