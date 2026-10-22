@@ -202,6 +202,40 @@ interviewsRouter.get('/history', authenticateToken, async (req: AuthRequest, res
   }
 });
 
+// GET /api/interviews/evaluations - List all candidate evaluations and scorecards
+interviewsRouter.get('/evaluations', authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const role = req.user!.role;
+    const userEmail = (req.user!.email || '').trim().toLowerCase();
+    const allReports = await db.getAllReports();
+
+    let evaluations: any[] = [];
+    if (role === 'admin') {
+      evaluations = allReports;
+    } else if (role === 'interviewer') {
+      evaluations = allReports.filter((r) => {
+        const matchesInterviewer =
+          String(r.interviewerId) === String(userId) ||
+          r.interviewerName === req.user!.fullName;
+        // Also allow interviewer to review candidate mock evaluations
+        return matchesInterviewer || !r.interviewerId;
+      });
+    } else {
+      evaluations = allReports.filter((r) => {
+        const matchesId = String(r.candidateId) === String(userId);
+        const matchesEmail =
+          r.candidateEmail && r.candidateEmail.trim().toLowerCase() === userEmail;
+        return matchesId || matchesEmail;
+      });
+    }
+
+    return res.json({ evaluations });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to fetch evaluations.' });
+  }
+});
+
 // GET /api/interviews/:id/report
 interviewsRouter.get('/:id/report', authenticateToken, async (req: AuthRequest, res) => {
   try {

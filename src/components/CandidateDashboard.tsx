@@ -50,6 +50,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onSelect
   const [interviews, setInterviews] = useState<any[]>(() => (isCacheValid ? cachedDashboardData!.interviews : []));
   const [scheduledInterviews, setScheduledInterviews] = useState<any[]>(() => (isCacheValid ? cachedDashboardData!.scheduledInterviews : []));
   const [avatarInterviews, setAvatarInterviews] = useState<any[]>(() => (isCacheValid ? cachedDashboardData!.avatarInterviews : []));
+  const [evaluations, setEvaluations] = useState<any[]>([]);
   const [resumes, setResumes] = useState<any[]>([]);
   const [loading, setLoading] = useState(!isCacheValid);
 
@@ -57,22 +58,25 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onSelect
     let isMounted = true;
     async function loadData() {
       try {
-        const [histRes, schedRes, avatarRes, resumeRes] = await Promise.all([
+        const [histRes, schedRes, avatarRes, resumeRes, evalRes] = await Promise.all([
           api.interviews.history().catch(() => ({ interviews: [] })),
           api.scheduled.list().catch(() => ({ scheduledInterviews: [] })),
           api.avatarInterviews.history().catch(() => ({ avatarInterviews: [] })),
           api.resume.myResumes().catch(() => ({ resumes: [] })),
+          api.interviews.evaluations().catch(() => ({ evaluations: [] })),
         ]);
         if (isMounted) {
           const fetchedInterviews = histRes.interviews || [];
           const fetchedScheduled = schedRes.scheduledInterviews || [];
           const fetchedAvatar = avatarRes.avatarInterviews || [];
           const fetchedResumes = resumeRes.resumes || [];
+          const fetchedEvaluations = evalRes.evaluations || [];
 
           setInterviews(fetchedInterviews);
           setScheduledInterviews(fetchedScheduled);
           setAvatarInterviews(fetchedAvatar);
           setResumes(fetchedResumes);
+          setEvaluations(fetchedEvaluations);
 
           if (user?.id) {
             cachedDashboardData = {
@@ -357,13 +361,13 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onSelect
         </div>
       </div>
 
-      {/* Upcoming Scheduled Human Interviews Section */}
+      {/* Interviews Created (Scheduled for You) */}
       <div id="upcoming-interviews-section" className="bg-[#0f172a] border border-slate-800 rounded-xl p-5 scroll-mt-20">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-emerald-400" />
             <h3 className="text-sm font-semibold text-white">
-              Upcoming live interviews
+              Interviews Created (Scheduled for you)
             </h3>
           </div>
           <span className="text-xs text-slate-400">{upcomingScheduled.length} scheduled</span>
@@ -412,7 +416,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onSelect
                 <button
                   id={`btn-join-room-${s.roomId}`}
                   onClick={() => onSelectView('human-interview-room', { roomId: s.roomId })}
-                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm shadow-emerald-600/20"
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm shadow-emerald-600/20 cursor-pointer"
                 >
                   <Video className="w-3.5 h-3.5" />
                   <span>Join Call</span>
@@ -423,15 +427,15 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onSelect
         )}
       </div>
 
-      {/* Past Mock Interviews / Reports History */}
+      {/* Candidate Evaluations & Interview History (All Interviews Taken) */}
       <div className="bg-[#0f172a] border border-slate-800 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-blue-400" />
-            <h3 className="text-sm font-semibold text-white">Interview history</h3>
+            <Award className="w-4 h-4 text-purple-400" />
+            <h3 className="text-sm font-semibold text-white">Candidate Evaluations & Interview Scorecards</h3>
           </div>
           <span className="text-xs text-slate-400">
-            {interviews.length + completedScheduled.length} sessions logged
+            {interviews.length + completedScheduled.length + avatarInterviews.length} interviews taken
           </span>
         </div>
 

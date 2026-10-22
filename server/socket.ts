@@ -155,6 +155,23 @@ export function initSocketServer(httpServer: HTTPServer) {
       });
     });
 
+    // WebRTC Signaling: Ready handshake trigger
+    socket.on('signal:ready', ({ to, roomId }: { to?: string; roomId?: string }) => {
+      const readyPayload = {
+        from: socket.id,
+        user: {
+          id: user.id,
+          name: user.fullName,
+          role: user.role,
+        },
+      };
+      if (to) {
+        socket.to(to).emit('signal:ready', readyPayload);
+      } else if (roomId) {
+        socket.to(roomId).emit('signal:ready', readyPayload);
+      }
+    });
+
     // WebRTC Signaling: Offer
     socket.on('signal:offer', ({ to, offer }: { to: string; offer: any }) => {
       socket.to(to).emit('signal:offer', {

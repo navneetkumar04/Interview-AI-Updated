@@ -15,7 +15,17 @@ export interface IceServerConfig {
 }
 
 export const DEFAULT_STUN_SERVERS: IceServerConfig[] = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  {
+    urls: [
+      'stun:stun.l.google.com:19302',
+      'stun:stun1.l.google.com:19302',
+      'stun:stun2.l.google.com:19302',
+      'stun:stun3.l.google.com:19302',
+      'stun:stun4.l.google.com:19302',
+      'stun:stun.services.mozilla.com',
+      'stun:stun.cloudflare.com:3478',
+    ],
+  },
 ];
 
 /**
@@ -169,6 +179,7 @@ export interface WebRTCManagerCallbacks {
 export class WebRTCManager {
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
+  private remoteMediaStream: MediaStream = new MediaStream();
   private callbacks: WebRTCManagerCallbacks;
   private targetSocketId: string | null = null;
   private isInitiator: boolean = false;
@@ -181,6 +192,7 @@ export class WebRTCManager {
   public async initializePeerConnection(targetSocketId: string, isInitiator: boolean): Promise<RTCPeerConnection> {
     this.targetSocketId = targetSocketId;
     this.isInitiator = isInitiator;
+    this.remoteMediaStream = new MediaStream();
 
     // Use synchronously available ICE servers to prevent delaying signaling
     const iceServers = cachedIceServers || getIceServers().iceServers;
@@ -192,7 +204,9 @@ export class WebRTCManager {
     };
 
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.close();
+      } catch {}
       this.peerConnection = null;
     }
 
@@ -211,15 +225,35 @@ export class WebRTCManager {
       });
     }
 
-    // Handle remote media tracks
+    // Handle remote media tracks - aggregate audio & video into persistent remote stream
     this.peerConnection.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        this.callbacks.onRemoteStream?.(event.streams[0]);
-      } else if (event.track) {
-        // Fallback for browsers delivering tracks individually
-        const fallbackStream = new MediaStream([event.track]);
-        this.callbacks.onRemoteStream?.(fallbackStream);
+      // 1. If individual track supplied
+      if (event.track) {
+        const existingTracks = this.remoteMediaStream.getTracks();
+        const sameKindTracks = existingTracks.filter((t) => t.kind === event.track.kind);
+        // Replace outdated track of same kind if id differs
+        sameKindTracks.forEach((t) => {
+          if (t.id !== event.track.id) {
+            this.remoteMediaStream.removeTrack(t);
+          }
+        });
+        if (!this.remoteMediaStream.getTrackById(event.track.id)) {
+          this.remoteMediaStream.addTrack(event.track);
+        }
       }
+
+      // 2. If streams array supplied
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          if (!this.remoteMediaStream.getTrackById(track.id)) {
+            this.remoteMediaStream.addTrack(track);
+          }
+        });
+      }
+
+      // 3. Emit a newly cloned MediaStream reference so React state hooks trigger clean re-renders
+      const combinedStream = new MediaStream(this.remoteMediaStream.getTracks());
+      this.callbacks.onRemoteStream?.(combinedStream);
     };
 
     // Forward ICE candidates through signaling
@@ -328,7 +362,7 @@ export class WebRTCManager {
 
     if (this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
       try {
-        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        await this.peerConnection.addIceCandidate(candidate);
       } catch (err: any) {
         console.warn('ICE candidate addition error:', err);
       }
@@ -339,14 +373,13 @@ export class WebRTCManager {
 
   private async drainPendingCandidates(): Promise<void> {
     if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
-    while (this.pendingCandidates.length > 0) {
-      const cand = this.pendingCandidates.shift();
-      if (cand) {
-        try {
-          await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-        } catch (e) {
-          console.warn('Deferred candidate addition warning:', e);
-        }
+    const candidates = [...this.pendingCandidates];
+    this.pendingCandidates = [];
+    for (const cand of candidates) {
+      try {
+        await this.peerConnection.addIceCandidate(cand);
+      } catch (e) {
+        console.warn('Deferred candidate addition warning:', e);
       }
     }
   }
@@ -403,9 +436,12 @@ export class WebRTCManager {
 
   public close(): void {
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.close();
+      } catch {}
       this.peerConnection = null;
     }
+    this.remoteMediaStream = new MediaStream();
     this.targetSocketId = null;
     this.pendingCandidates = [];
   }

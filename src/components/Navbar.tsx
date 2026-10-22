@@ -18,7 +18,7 @@ import {
 
 interface NavbarProps {
   currentView: string;
-  onSelectView: (view: string) => void;
+  onSelectView: (view: string, params?: any) => void;
   onOpenAuth: (mode?: 'login' | 'register') => void;
 }
 
@@ -168,7 +168,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onSelectView, onOpe
                 <>
                   <button
                     id="nav-interviewer-dashboard"
-                    onClick={() => onSelectView('interviewer-dashboard')}
+                    onClick={() => onSelectView('interviewer-dashboard', { tab: 'created' })}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
                       currentView === 'interviewer-dashboard'
                         ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30'
@@ -192,9 +192,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onSelectView, onOpe
                   </button>
                   <button
                     id="nav-interviewer-reports"
-                    onClick={() => onSelectView('interviews-history')}
+                    onClick={() => onSelectView('interviewer-dashboard', { tab: 'evaluations' })}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
-                      currentView === 'interviews-history'
+                      currentView === 'interviewer-dashboard'
                         ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30'
                         : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                     }`}

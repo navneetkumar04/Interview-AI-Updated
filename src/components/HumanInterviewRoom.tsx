@@ -47,6 +47,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
   // Video & Audio streams state
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -286,6 +287,20 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
     }
   };
 
+  // Auto-reconnect watchdog: if remote peer detected but peer connection doesn't connect within 4 seconds, auto-renegotiate
+  useEffect(() => {
+    if (!remotePeerSocketId || remoteStream || connectionState === 'connected') return;
+
+    const timer = setTimeout(() => {
+      if (!remoteStream && connectionState !== 'connected') {
+        console.log('[WebRTC] Watchdog triggering renegotiation with peer:', remotePeerSocketId);
+        handleReconnect();
+      }
+    }, 3800);
+
+    return () => clearTimeout(timer);
+  }, [remotePeerSocketId, remoteStream, connectionState]);
+
   // 2. Fetch Interview Info, Acquire Media, and Connect WebRTC & Socket
   useEffect(() => {
     let isDisposed = false;
@@ -311,16 +326,37 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
         const stream = await initLocalMedia();
         if (isDisposed) return;
 
+        // Helper to bind and play media streams with autoplay policy resilience
+        const attachRemoteStream = (incomingStream: MediaStream) => {
+          if (remoteVideoRef.current) {
+            if (remoteVideoRef.current.srcObject !== incomingStream) {
+              remoteVideoRef.current.srcObject = incomingStream;
+            }
+            remoteVideoRef.current.play().catch((err) => {
+              console.warn('[WebRTC] Video autoPlay unmuted blocked by browser policy, muting video to display frames:', err);
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current.muted = true;
+                remoteVideoRef.current.play().catch(() => {});
+              }
+            });
+          }
+          if (remoteAudioRef.current) {
+            if (remoteAudioRef.current.srcObject !== incomingStream) {
+              remoteAudioRef.current.srcObject = incomingStream;
+            }
+            remoteAudioRef.current.play().catch((err) => {
+              console.warn('[WebRTC] Audio autoPlay blocked pending user gesture:', err);
+            });
+          }
+        };
+
         // B. Instantiate WebRTC Manager
         const manager = new WebRTCManager({
           onRemoteStream: (incomingStream: MediaStream) => {
             if (isDisposed) return;
             setRemoteStream(incomingStream);
             setPeerDisconnected(false);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = incomingStream;
-              remoteVideoRef.current.play().catch(() => {});
-            }
+            attachRemoteStream(incomingStream);
           },
           onConnectionStateChange: (state: RTCPeerConnectionState) => {
             if (isDisposed) return;
@@ -390,9 +426,12 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
             currentUser?.role === 'admin' ||
             String(currentInterview?.interviewerId) === String(currentUser?.id);
 
+          let targetPeerSocketId: string | null = null;
+
           // If a participant is already in the room, record their information
           if (data.existingParticipants && data.existingParticipants.length > 0) {
             const peer = data.existingParticipants[0];
+            targetPeerSocketId = peer.socketId;
             setRemotePeerSocketId(peer.socketId);
             setRemotePeerInfo({
               name: peer.userName || (isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName),
@@ -402,6 +441,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
             });
           } else if (data.existingUsers && data.existingUsers.length > 0) {
             const peerId = data.existingUsers[0];
+            targetPeerSocketId = peerId;
             setRemotePeerSocketId(peerId);
             setRemotePeerInfo({
               name: isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName,
@@ -409,6 +449,43 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
               micEnabled: true,
               camEnabled: true,
             });
+          }
+
+          // If existing peer detected, emit ready signal to initiate bilateral connection
+          if (targetPeerSocketId) {
+            socket.emit('signal:ready', { to: targetPeerSocketId, roomId });
+          }
+        });
+
+        // Peer readiness signal (ensures offer initiates even if join order or event timing was skewed)
+        socket.on('signal:ready', async (data: { from: string; user?: any }) => {
+          if (isDisposed) return;
+
+          const currentInterview = interviewRef.current;
+          const currentUser = userRef.current;
+          const isInterviewerNow =
+            currentUser?.role === 'interviewer' ||
+            currentUser?.role === 'admin' ||
+            String(currentInterview?.interviewerId) === String(currentUser?.id);
+
+          setRemotePeerSocketId(data.from);
+          if (data.user) {
+            setRemotePeerInfo({
+              name: data.user.name || (isInterviewerNow ? currentInterview?.candidateName : currentInterview?.interviewerName),
+              role: data.user.role || (isInterviewerNow ? 'Candidate' : 'Interviewer'),
+              micEnabled: true,
+              camEnabled: true,
+            });
+          }
+          setPeerDisconnected(false);
+
+          // Initiate WebRTC offer to the peer that signaled ready
+          if (webrtcManagerRef.current) {
+            try {
+              await webrtcManagerRef.current.initializePeerConnection(data.from, true);
+            } catch (e) {
+              console.warn('[WebRTC] Failed to initialize peer connection on signal:ready:', e);
+            }
           }
         });
 
@@ -573,6 +650,7 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
         socketRef.current.emit('leave-room', { roomId });
         socketRef.current.off('room-error');
         socketRef.current.off('joined-room');
+        socketRef.current.off('signal:ready');
         socketRef.current.off('user-joined');
         socketRef.current.off('signal:offer');
         socketRef.current.off('signal:answer');
@@ -596,11 +674,49 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
   }, [localStream, isCameraOff]);
 
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(() => {});
+    if (remoteStream) {
+      if (remoteVideoRef.current) {
+        if (remoteVideoRef.current.srcObject !== remoteStream) {
+          remoteVideoRef.current.srcObject = remoteStream;
+        }
+        remoteVideoRef.current.play().catch((err) => {
+          console.warn('[WebRTC] Remote video autoplay caught policy restriction, muting video to display frames:', err);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.muted = true;
+            remoteVideoRef.current.play().catch(() => {});
+          }
+        });
+      }
+      if (remoteAudioRef.current) {
+        if (remoteAudioRef.current.srcObject !== remoteStream) {
+          remoteAudioRef.current.srcObject = remoteStream;
+        }
+        remoteAudioRef.current.play().catch((err) => {
+          console.warn('[WebRTC] Remote audio autoplay waiting for user interaction:', err);
+        });
+      }
     }
   }, [remoteStream, peerDisconnected]);
+
+  // Global user interaction listener to unblock audio/video playback if browser restricted initial autoplay
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (remoteAudioRef.current && remoteAudioRef.current.paused && remoteStream) {
+        remoteAudioRef.current.play().catch(() => {});
+      }
+      if (remoteVideoRef.current && remoteVideoRef.current.paused && remoteStream) {
+        remoteVideoRef.current.play().catch(() => {});
+      }
+    };
+    window.addEventListener('click', unlockAudio, { passive: true });
+    window.addEventListener('keydown', unlockAudio, { passive: true });
+    window.addEventListener('touchstart', unlockAudio, { passive: true });
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+  }, [remoteStream]);
 
   // Copy meeting link
   const handleCopyMeetingLink = () => {
@@ -948,6 +1064,25 @@ export const HumanInterviewRoom: React.FC<HumanInterviewRoomProps> = ({ roomId, 
                     remoteStream && !peerDisconnected ? 'block' : 'hidden'
                   }`}
                 />
+                <audio ref={remoteAudioRef} autoPlay playsInline />
+
+                {remoteStream && !peerDisconnected && (
+                  <button
+                    onClick={() => {
+                      if (remoteAudioRef.current) {
+                        remoteAudioRef.current.play().catch(() => {});
+                      }
+                      if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                        remoteVideoRef.current.play().catch(() => {});
+                      }
+                    }}
+                    title="Audio stream active - Click to ensure sound is playing"
+                    className="absolute top-12 right-3 z-10 px-2.5 py-1 bg-black/70 hover:bg-black/90 backdrop-blur-md rounded-lg border border-emerald-500/30 text-[10px] text-emerald-300 flex items-center gap-1.5 cursor-pointer shadow-lg transition-all"
+                  >
+                    <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
+                    <span>Live Audio & Video</span>
+                  </button>
+                )}
                 {(!remoteStream || peerDisconnected) && (
                   <div className="text-center p-6 max-w-sm">
                     <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mx-auto mb-3">

@@ -191,6 +191,20 @@ const MainContent: React.FC = () => {
       return;
     }
 
+    // Guard candidate-only practice functions from interviewer accounts
+    if (
+      user.role === 'interviewer' &&
+      (view === 'dashboard' ||
+        view === 'avatar-interview' ||
+        view === 'classic-interview' ||
+        view === 'resume-analyzer' ||
+        view === 'video-analyzer' ||
+        view === 'career-roadmap')
+    ) {
+      setCurrentView('interviewer-dashboard');
+      return;
+    }
+
     setViewParams(params);
     setCurrentView(view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -253,11 +267,17 @@ const MainContent: React.FC = () => {
               )}
 
               {currentView === 'scheduled-interviews' && (
-                <InterviewerDashboard onSelectView={handleSelectView} />
+                <InterviewerDashboard
+                  initialTab={viewParams?.tab}
+                  onSelectView={handleSelectView}
+                />
               )}
 
               {currentView === 'interviewer-dashboard' && (
-                <InterviewerDashboard onSelectView={handleSelectView} />
+                <InterviewerDashboard
+                  initialTab={viewParams?.tab}
+                  onSelectView={handleSelectView}
+                />
               )}
 
               {currentView === 'resume-analyzer' && <ResumeAnalyzer />}
@@ -285,7 +305,7 @@ const MainContent: React.FC = () => {
         )}
       </main>
 
-      {/* Comprehensive Footer */}
+      {/* Role-Aware Footer */}
       <footer className="border-t border-slate-800/80 bg-[#070b14] py-10 text-xs text-slate-400">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
@@ -301,79 +321,185 @@ const MainContent: React.FC = () => {
               </div>
             </div>
 
+            {/* Column 2: Platform / Workspace Links (Role-Aware) */}
             <div>
-              <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Platform</h4>
+              <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">
+                {user?.role === 'interviewer'
+                  ? 'Interviewer Workspace'
+                  : user?.role === 'admin'
+                  ? 'Administration'
+                  : 'Practice Modes'}
+              </h4>
               <ul className="space-y-2 text-slate-400">
-                <li>
-                  <button
-                    onClick={() => handleSelectView('avatar-interview')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    AI Avatar Simulator
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('classic-interview')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Classic Mock Interviews
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('resume-analyzer')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    ATS Resume Analyzer
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('video-analyzer')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Behavioral Video Analysis
-                  </button>
-                </li>
+                {user?.role === 'interviewer' ? (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('interviewer-dashboard', { tab: 'created' })}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        Live Interview Rooms
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('interviewer-dashboard', { tab: 'evaluations' })}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        Candidate Evaluations
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('schedule-modal')}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        Schedule Live Session
+                      </button>
+                    </li>
+                  </>
+                ) : user?.role === 'admin' ? (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('admin-panel')}
+                        className="hover:text-amber-300 transition-colors cursor-pointer"
+                      >
+                        Platform Administration
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('admin-panel')}
+                        className="hover:text-amber-300 transition-colors cursor-pointer"
+                      >
+                        Session Monitoring
+                      </button>
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('avatar-interview')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        AI Avatar Simulator
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('classic-interview')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        Classic Mock Interviews
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('scheduled-interviews')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        Live Peer Rooms
+                      </button>
+                    </li>
+                  </>
+                )}
               </ul>
             </div>
 
+            {/* Column 3: Roles & Portals / Tools (Role-Aware) */}
             <div>
-              <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Roles & Portals</h4>
+              <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">
+                {user?.role === 'interviewer'
+                  ? 'Operations & Management'
+                  : user?.role === 'admin'
+                  ? 'Management'
+                  : 'Career Tools'}
+              </h4>
               <ul className="space-y-2 text-slate-400">
-                <li>
-                  <button
-                    onClick={() => handleSelectView('dashboard')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Candidate Dashboard
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('interviewer-dashboard')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Interviewer Dashboard
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('admin-panel')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Administrator Panel
-                  </button>
-                </li>
-                <li>
-                  <button
-                    onClick={() => handleSelectView('career-roadmap')}
-                    className="hover:text-slate-200 transition-colors"
-                  >
-                    Career Roadmaps
-                  </button>
-                </li>
+                {user?.role === 'interviewer' ? (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('interviewer-dashboard', { tab: 'created' })}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        Interviewer Dashboard
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('interviewer-dashboard', { tab: 'evaluations' })}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        Candidate Scorecard Archive
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('interviewer-dashboard', { tab: 'created' })}
+                        className="hover:text-purple-300 transition-colors cursor-pointer"
+                      >
+                        WebRTC Room Manager
+                      </button>
+                    </li>
+                  </>
+                ) : user?.role === 'admin' ? (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('admin-panel')}
+                        className="hover:text-amber-300 transition-colors cursor-pointer"
+                      >
+                        User Directory
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('admin-panel')}
+                        className="hover:text-amber-300 transition-colors cursor-pointer"
+                      >
+                        Performance Metrics
+                      </button>
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('dashboard')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        Candidate Dashboard
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('resume-analyzer')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        ATS Resume Analyzer
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('video-analyzer')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        Behavioral Video Review
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        onClick={() => handleSelectView('career-roadmap')}
+                        className="hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        Career Roadmaps
+                      </button>
+                    </li>
+                  </>
+                )}
               </ul>
             </div>
 

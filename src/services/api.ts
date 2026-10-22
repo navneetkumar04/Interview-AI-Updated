@@ -169,6 +169,7 @@ export const api = {
         body: JSON.stringify(body),
       }),
     history: () => apiRequest<{ interviews: any[] }>('/api/interviews/history'),
+    evaluations: () => apiRequest<{ evaluations: any[] }>('/api/interviews/evaluations'),
     getReport: (id: string) => apiRequest<{ report: any }>(`/api/interviews/${id}/report`),
   },
 
